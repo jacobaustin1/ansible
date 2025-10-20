@@ -3,7 +3,7 @@
 # - Fixed handlers to avoid invalid 'listen' attribute on a block
 # - Keeps config test before reload
 - name: Install and configure nginx on Ubuntu
-  hosts: all
+  hosts: localhost
   become: yes
   vars:
     nginx_listen_port: 80
