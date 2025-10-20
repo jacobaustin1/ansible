@@ -1,0 +1,101 @@
+---
+# Author: Icho (lli4203@rit.edu) — adapted to run locally
+# Date: September 16, 2025
+# Description: Deploys Nginx, hosts payloads, demonstrates remote management.
+#              Runs locally (connection: local) and also creates team users.
+
+- name: Deploy Nginx and configure payload hosting (local)
+  hosts: localhost
+  connection: local
+  become: yes
+  gather_facts: yes
+
+  vars:
+    # team users and plaintext passwords (for clarity). Consider using Ansible Vault.
+    team_creds:
+      - { name: "greyteam",         passwd_plain: "GreyTeamIsAwesome123!" }
+      - { name: "greyteam2",        passwd_plain: "GreyTeamIsAwesome123!" }
+      - { name: "ansible",          passwd_plain: "GreyTeamIsAwesome123!" }
+      - { name: "redteam",          passwd_plain: "DefaultPassword123!" }
+      - { name: "blueteam",         passwd_plain: "DefaultPassword123!" }
+      - { name: "john.hammond",     passwd_plain: "DefaultPassword123!" }
+      - { name: "henry.wu",         passwd_plain: "DefaultPassword123!" }
+      - { name: "robert.muldoon",   passwd_plain: "DefaultPassword123!" }
+      - { name: "john.arnold",      passwd_plain: "DefaultPassword123!" }
+      - { name: "dennis.nedry",     passwd_plain: "DefaultPassword123!" }
+
+  tasks:
+    - name: Install Nginx
+      apt:
+        name: nginx
+        state: present
+        update_cache: yes
+
+    - name: Ensure Nginx is running
+      service:
+        name: nginx
+        state: started
+        enabled: yes
+
+    - name: Create payload directory
+      file:
+        path: /var/www/html/payloads
+        state: directory
+        mode: '0755'
+
+    - name: Deploy payload file
+      copy:
+        src: files/sliver_payload.elf
+        dest: /var/www/html/payloads/sliver_payload.elf
+        mode: '0755'
+
+    - name: Configure Nginx to serve payloads
+      copy:
+        src: files/nginx_payloads.conf
+        dest: /etc/nginx/sites-available/default
+        mode: '0644'
+        backup: yes
+      notify: Reload Nginx
+
+    ########################################
+    # User provisioning for competition use
+    ########################################
+
+    - name: Create or update team users with hashed passwords
+      user:
+        name: "{{ item.name }}"
+        password: "{{ (item.passwd_plain) | password_hash('sha512') }}"
+        shell: /bin/bash
+        create_home: yes
+        state: present
+      loop: "{{ team_creds }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Ensure each team user has a .ssh directory with correct perms
+      file:
+        path: "/home/{{ item.name }}/.ssh"
+        state: directory
+        owner: "{{ item.name }}"
+        group: "{{ item.name }}"
+        mode: '0700'
+      loop: "{{ team_creds }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Ensure authorized_keys exists for each team user (placeholder)
+      file:
+        path: "/home/{{ item.name }}/.ssh/authorized_keys"
+        state: touch
+        owner: "{{ item.name }}"
+        group: "{{ item.name }}"
+        mode: '0600'
+      loop: "{{ team_creds }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+  handlers:
+    - name: Reload Nginx
+      service:
+        name: nginx
+        state: reloaded
