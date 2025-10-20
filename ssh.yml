@@ -1,0 +1,147 @@
+---
+# Jacob Austin
+# SSH Server config
+# Updated: 2025-10-20 (Removed Netplan IP configuration)
+- name: SSH Server
+  hosts: localhost
+  become: yes
+  vars:
+    ssh_admin_user: greyteam
+    ssh_admin_password: "{{ 'GreyTeamIsAwesome123!' | password_hash('sha512') }}"
+
+    # Allowed machines (example)
+    ssh_allowed_machines:
+      - "10.0.1.4"
+      - "10.0.1.6"
+
+    # Directory for SFTP uploads
+    remote_file_dir: /home/{{ ssh_admin_user }}/sftp
+
+    # Team/user credentials
+    team_creds:
+      - { name: "greyteam2",   passwd_plain: "GreyTeamIsAwesome123!" }
+      - { name: "ansible",     passwd_plain: "GreyTeamIsAwesome123!" }
+      - { name: "redteam",     passwd_plain: "DefaultPassword123!" }
+      - { name: "blueteam",    passwd_plain: "DefaultPassword123!" }
+      - { name: "john.hammond",passwd_plain: "DefaultPassword123!" }
+      - { name: "henry.wu",    passwd_plain: "DefaultPassword123!" }
+      - { name: "robert.muldoon", passwd_plain: "DefaultPassword123!" }
+      - { name: "john.arnold", passwd_plain: "DefaultPassword123!" }
+      - { name: "dennis.nedry",passwd_plain: "DefaultPassword123!" }
+
+    # List of users allowed to SSH
+    ssh_allowed_users: "{{ [ssh_admin_user] + (team_creds | map(attribute='name') | list) }}"
+
+    ssh_auth_log: /var/log/ssh_auth.log
+    sshd_config_path: /etc/ssh/sshd_config
+    ssh_listen_port: 22
+
+  tasks:
+
+    - name: Ensure apt cache is updated
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Ensure OpenSSH is installed
+      apt:
+        name: openssh-server
+        state: present
+
+    - name: Ensure SSH is running
+      service:
+        name: ssh
+        state: started
+        enabled: yes
+
+    - name: Create admin user
+      user:
+        name: "{{ ssh_admin_user }}"
+        password: "{{ ssh_admin_password }}"
+        shell: /bin/bash
+        create_home: yes
+        state: present
+
+    - name: Give admin passwordless sudo
+      lineinfile:
+        dest: /etc/sudoers
+        state: present
+        regexp: "^{{ ssh_admin_user }}"
+        line: "{{ ssh_admin_user }} ALL=(ALL) NOPASSWD:ALL"
+        validate: 'visudo -cf %s'
+
+    - name: Create/update team users and set hashed passwords
+      user:
+        name: "{{ item.name }}"
+        password: "{{ (item.passwd_plain) | password_hash('sha512') }}"
+        shell: /bin/bash
+        create_home: yes
+        state: present
+      loop: "{{ team_creds }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Ensure each user has a .ssh dir with correct perms
+      file:
+        path: "/home/{{ item.name }}/.ssh"
+        state: directory
+        owner: "{{ item.name }}"
+        group: "{{ item.name }}"
+        mode: '0700'
+      loop: "{{ team_creds }}"
+
+    - name: Ensure authorized_keys exists for each user (placeholder)
+      file:
+        path: "/home/{{ item.name }}/.ssh/authorized_keys"
+        state: touch
+        owner: "{{ item.name }}"
+        group: "{{ item.name }}"
+        mode: '0600'
+      loop: "{{ team_creds }}"
+
+    - name: Configure SSH daemon (AllowUsers and basic config)
+      blockinfile:
+        path: "{{ sshd_config_path }}"
+        marker: "# {mark} ANSIBLE MANAGED SSH CUSTOM"
+        block: |
+          # Custom Config
+          Protocol 2
+          PermitRootLogin no
+          PasswordAuthentication yes
+          AllowUsers {{ ssh_allowed_users | join(' ') }}
+          Subsystem sftp internal-sftp
+      notify: Restart SSH
+
+    - name: Create SFTP directory
+      file:
+        path: "{{ remote_file_dir }}"
+        state: directory
+        owner: "{{ ssh_admin_user }}"
+        group: "{{ ssh_admin_user }}"
+        mode: '0755'
+
+    - name: Create auth log file
+      file:
+        path: /etc/rsyslog.d/50-ssh.conf
+        state: touch
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Configure SSH auth logging
+      lineinfile:
+        path: /etc/rsyslog.d/50-ssh.conf
+        line: "auth,authpriv.* {{ ssh_auth_log }}"
+        state: present
+      notify: Restart Rsyslog
+
+  handlers:
+    - name: Restart SSH
+      service:
+        name: ssh
+        state: restarted
+
+    - name: Restart Rsyslog
+      service:
+        name: rsyslog
+        state: restarted
