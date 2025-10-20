@@ -1,6 +1,7 @@
 ---
-# Simple NGINX install + basic page for Ubuntu
-# Usage: ansible-playbook -i inventory nginx-ubuntu.yml
+# Simple NGINX install + basic page for Ubuntu (corrected)
+# - Fixed handlers to avoid invalid 'listen' attribute on a block
+# - Keeps config test before reload
 - name: Install and configure nginx on Ubuntu
   hosts: all
   become: yes
@@ -65,9 +66,9 @@
           command: nginx -t
           register: nginx_test
           changed_when: false
-          failed_when: nginx_test.rc not in [0]
+          failed_when: nginx_test.rc != 0
+
         - name: Reload nginx
           service:
             name: nginx
             state: reloaded
-      listen: "Test and reload nginx"
