@@ -1,101 +1,73 @@
 ---
-# Author: Icho (lli4203@rit.edu) — adapted to run locally
-# Date: September 16, 2025
-# Description: Deploys Nginx, hosts payloads, demonstrates remote management.
-#              Runs locally (connection: local) and also creates team users.
-
-- name: Deploy Nginx and configure payload hosting (local)
-  hosts: localhost
-  connection: local
+# Simple NGINX install + basic page for Ubuntu
+# Usage: ansible-playbook -i inventory nginx-ubuntu.yml
+- name: Install and configure nginx on Ubuntu
+  hosts: all
   become: yes
-  gather_facts: yes
-
   vars:
-    # team users and plaintext passwords (for clarity). Consider using Ansible Vault.
-    team_creds:
-      - { name: "greyteam",         passwd_plain: "GreyTeamIsAwesome123!" }
-      - { name: "greyteam2",        passwd_plain: "GreyTeamIsAwesome123!" }
-      - { name: "ansible",          passwd_plain: "GreyTeamIsAwesome123!" }
-      - { name: "redteam",          passwd_plain: "DefaultPassword123!" }
-      - { name: "blueteam",         passwd_plain: "DefaultPassword123!" }
-      - { name: "john.hammond",     passwd_plain: "DefaultPassword123!" }
-      - { name: "henry.wu",         passwd_plain: "DefaultPassword123!" }
-      - { name: "robert.muldoon",   passwd_plain: "DefaultPassword123!" }
-      - { name: "john.arnold",      passwd_plain: "DefaultPassword123!" }
-      - { name: "dennis.nedry",     passwd_plain: "DefaultPassword123!" }
+    nginx_listen_port: 80
+    server_name: "{{ ansible_fqdn | default(inventory_hostname) }}"
+    index_content: |
+      <html>
+      <head><title>Welcome</title></head>
+      <body>
+        <h1>Welcome to {{ server_name }}</h1>
+        <p>Managed by Ansible.</p>
+      </body>
+      </html>
 
   tasks:
-    - name: Install Nginx
+    - name: Ensure apt cache is up to date
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Install nginx
       apt:
         name: nginx
         state: present
-        update_cache: yes
 
-    - name: Ensure Nginx is running
+    - name: Ensure nginx is enabled and started
       service:
         name: nginx
         state: started
         enabled: yes
 
-    - name: Create payload directory
+    - name: Ensure web root exists
       file:
-        path: /var/www/html/payloads
+        path: /var/www/html
         state: directory
+        owner: www-data
+        group: www-data
         mode: '0755'
 
-    - name: Deploy payload file
+    - name: Deploy a simple index.html
       copy:
-        src: files/sliver_payload.elf
-        dest: /var/www/html/payloads/sliver_payload.elf
-        mode: '0755'
-
-    - name: Configure Nginx to serve payloads
-      copy:
-        src: files/nginx_payloads.conf
-        dest: /etc/nginx/sites-available/default
+        dest: /var/www/html/index.html
+        content: "{{ index_content }}"
+        owner: www-data
+        group: www-data
         mode: '0644'
-        backup: yes
-      notify: Reload Nginx
+      notify: Test and reload nginx
 
-    ########################################
-    # User provisioning for competition use
-    ########################################
-
-    - name: Create or update team users with hashed passwords
-      user:
-        name: "{{ item.name }}"
-        password: "{{ (item.passwd_plain) | password_hash('sha512') }}"
-        shell: /bin/bash
-        create_home: yes
-        state: present
-      loop: "{{ team_creds }}"
-      loop_control:
-        label: "{{ item.name }}"
-
-    - name: Ensure each team user has a .ssh directory with correct perms
-      file:
-        path: "/home/{{ item.name }}/.ssh"
-        state: directory
-        owner: "{{ item.name }}"
-        group: "{{ item.name }}"
-        mode: '0700'
-      loop: "{{ team_creds }}"
-      loop_control:
-        label: "{{ item.name }}"
-
-    - name: Ensure authorized_keys exists for each team user (placeholder)
-      file:
-        path: "/home/{{ item.name }}/.ssh/authorized_keys"
-        state: touch
-        owner: "{{ item.name }}"
-        group: "{{ item.name }}"
-        mode: '0600'
-      loop: "{{ team_creds }}"
-      loop_control:
-        label: "{{ item.name }}"
+    - name: (Optional) Ensure default nginx site config uses correct listen port
+      lineinfile:
+        path: /etc/nginx/sites-available/default
+        regexp: '^\s*listen\s+[0-9]+'
+        line: "    listen {{ nginx_listen_port }} default_server;"
+        backrefs: yes
+      notify: Test and reload nginx
 
   handlers:
-    - name: Reload Nginx
-      service:
-        name: nginx
-        state: reloaded
+    - name: Test and reload nginx
+      block:
+        - name: Test nginx configuration
+          command: nginx -t
+          register: nginx_test
+          changed_when: false
+          failed_when: nginx_test.rc not in [0]
+        - name: Reload nginx
+          service:
+            name: nginx
+            state: reloaded
+      listen: "Test and reload nginx"
