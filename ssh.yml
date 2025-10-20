@@ -1,7 +1,11 @@
 ---
 # Jacob Austin
-# SSH Server config
-# Updated: 2025-10-20 (Removed Netplan IP configuration)
+# SSH Server config (updated 2025-10-20)
+# - Permit both 10.1.0.x and 10.0.0.x subnets using user@subnet patterns in AllowUsers
+# - Build AllowUsers entries for each allowed user × each permitted subnet
+# - Ensure .ssh + authorized_keys created for all allowed users (including admin)
+# - Create dedicated ssh auth rsyslog config and log file
+# - Minor robustness improvements (initialize facts, explicit file creation)
 - name: SSH Server
   hosts: localhost
   become: yes
@@ -9,10 +13,10 @@
     ssh_admin_user: greyteam
     ssh_admin_password: "{{ 'GreyTeamIsAwesome123!' | password_hash('sha512') }}"
 
-    # Allowed machines (example)
-    ssh_allowed_machines:
-      - "10.0.1.4"
-      - "10.0.1.6"
+    # Subnets to allow (wildcard form)
+    ssh_allowed_subnets:
+      - "10.1.0.*"
+      - "10.0.0.*"
 
     # Directory for SFTP uploads
     remote_file_dir: /home/{{ ssh_admin_user }}/sftp
@@ -29,9 +33,10 @@
       - { name: "john.arnold", passwd_plain: "DefaultPassword123!" }
       - { name: "dennis.nedry",passwd_plain: "DefaultPassword123!" }
 
-    # List of users allowed to SSH
+    # List of users allowed to SSH (admin + all team members)
     ssh_allowed_users: "{{ [ssh_admin_user] + (team_creds | map(attribute='name') | list) }}"
 
+    # Path to the custom ssh auth logfile
     ssh_auth_log: /var/log/ssh_auth.log
     sshd_config_path: /etc/ssh/sshd_config
     ssh_listen_port: 22
@@ -81,25 +86,38 @@
       loop_control:
         label: "{{ item.name }}"
 
-    - name: Ensure each user has a .ssh dir with correct perms
+    - name: Initialize AllowUsers-with-host list
+      set_fact:
+        ssh_allowed_users_with_host: []
+
+    - name: Build AllowUsers list for each user × subnet
+      set_fact:
+        ssh_allowed_users_with_host: "{{ ssh_allowed_users_with_host | default([]) + [ item[0] + '@' + item[1] ] }}"
+      with_nested:
+        - "{{ ssh_allowed_users }}"
+        - "{{ ssh_allowed_subnets }}"
+      loop_control:
+        label: "{{ item[0] }}@{{ item[1] }}"
+
+    - name: Ensure each allowed user has a .ssh dir with correct perms
       file:
-        path: "/home/{{ item.name }}/.ssh"
+        path: "/home/{{ item }}/.ssh"
         state: directory
-        owner: "{{ item.name }}"
-        group: "{{ item.name }}"
+        owner: "{{ item }}"
+        group: "{{ item }}"
         mode: '0700'
-      loop: "{{ team_creds }}"
+      loop: "{{ ssh_allowed_users }}"
 
-    - name: Ensure authorized_keys exists for each user (placeholder)
+    - name: Ensure authorized_keys exists for each allowed user (placeholder)
       file:
-        path: "/home/{{ item.name }}/.ssh/authorized_keys"
+        path: "/home/{{ item }}/.ssh/authorized_keys"
         state: touch
-        owner: "{{ item.name }}"
-        group: "{{ item.name }}"
+        owner: "{{ item }}"
+        group: "{{ item }}"
         mode: '0600'
-      loop: "{{ team_creds }}"
+      loop: "{{ ssh_allowed_users }}"
 
-    - name: Configure SSH daemon (AllowUsers and basic config)
+    - name: Configure SSH daemon (AllowUsers using user@subnet patterns)
       blockinfile:
         path: "{{ sshd_config_path }}"
         marker: "# {mark} ANSIBLE MANAGED SSH CUSTOM"
@@ -108,7 +126,8 @@
           Protocol 2
           PermitRootLogin no
           PasswordAuthentication yes
-          AllowUsers {{ ssh_allowed_users | join(' ') }}
+          # Allow only the specific users when they come from the allowed subnets:
+          AllowUsers {{ ssh_allowed_users_with_host | join(' ') }}
           Subsystem sftp internal-sftp
       notify: Restart SSH
 
@@ -120,20 +139,24 @@
         group: "{{ ssh_admin_user }}"
         mode: '0755'
 
-    - name: Create auth log file
-      file:
-        path: /etc/rsyslog.d/50-ssh.conf
-        state: touch
+    - name: Create rsyslog ssh config file
+      copy:
+        dest: /etc/rsyslog.d/50-ssh.conf
+        content: |
+          # Log ssh auth events to a dedicated file
+          auth,authpriv.* {{ ssh_auth_log }}
         owner: root
         group: root
         mode: '0644'
-
-    - name: Configure SSH auth logging
-      lineinfile:
-        path: /etc/rsyslog.d/50-ssh.conf
-        line: "auth,authpriv.* {{ ssh_auth_log }}"
-        state: present
       notify: Restart Rsyslog
+
+    - name: Ensure SSH auth log file exists with correct perms
+      file:
+        path: "{{ ssh_auth_log }}"
+        state: touch
+        owner: root
+        group: adm
+        mode: '0640'
 
   handlers:
     - name: Restart SSH
